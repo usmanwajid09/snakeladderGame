@@ -1,0 +1,121 @@
+
+CREATE DATABASE SnakeLudoGameDB2;
+GO
+
+USE SnakeLudoGameDB2;
+GO
+
+CREATE TABLE LudoGamePlay (
+    turn_id    INT IDENTITY(1,1) PRIMARY KEY,  
+    player_id  INT     NOT NULL,           
+    dice_roll  INT     NOT NULL CHECK (dice_roll BETWEEN 1 AND 6),
+    position   INT     NOT NULL           
+);
+GO
+
+-- Create Snakes and Ladders Table
+CREATE TABLE SnakesAndLadders (
+    start_position INT PRIMARY KEY,
+    end_position   INT NOT NULL
+);
+GO
+
+-- Insert Snakes and Ladders
+INSERT INTO SnakesAndLadders (start_position, end_position)
+VALUES (17, 7),(62, 19),(34, 13), (87, 74),(95, 75),
+       (4, 14), (9, 31), (21, 42),(51, 67), (72, 91);
+GO
+
+-- Function to Calculate New Position
+CREATE FUNCTION CalculateNewPosition (
+    @current_position INT,
+    @dice_roll        INT
+)
+RETURNS INT
+AS
+BEGIN
+    DECLARE @newPos INT = @current_position + @dice_roll;
+
+    IF @newPos > 100
+        SET @newPos = 100;
+
+    -- Apply Snakes or Ladders if applicable
+    SELECT @newPos = end_position
+    FROM SnakesAndLadders
+    WHERE start_position = @newPos;
+
+    RETURN @newPos;
+END;
+GO
+
+-- Trigger to Update Position After Insert
+CREATE TRIGGER trg_UpdatePosition
+ON LudoGamePlay
+AFTER INSERT
+AS
+BEGIN
+    UPDATE LGP
+    SET LGP.position = dbo.CalculateNewPosition(
+                            ISNULL(prev.position, 0),
+                            inserted.dice_roll
+                        )
+    FROM LudoGamePlay AS LGP
+    INNER JOIN inserted ON LGP.turn_id = inserted.turn_id
+    LEFT JOIN (
+        SELECT player_id, MAX(position) AS position
+        FROM LudoGamePlay
+        WHERE turn_id < (SELECT MIN(turn_id) FROM inserted)
+        GROUP BY player_id
+    ) AS prev ON inserted.player_id = prev.player_id;
+END;
+GO
+
+-- Procedure to Simulate Turn
+CREATE PROCEDURE SimulateTurn
+AS
+BEGIN
+    DECLARE @lastTurnId INT,
+            @nextPlayer INT,
+            @diceRoll   INT;
+
+    SELECT @lastTurnId = MAX(turn_id) FROM LudoGamePlay;
+
+    IF @lastTurnId IS NULL
+        SET @nextPlayer = 1;
+    ELSE
+	begin 
+        SET @nextPlayer = CASE WHEN (SELECT player_id FROM LudoGamePlay WHERE turn_id = @lastTurnId) = 1 THEN 2 ELSE 1 END;
+		end ;
+
+    SELECT @diceRoll = FLOOR(RAND(CHECKSUM(NEWID())) * 6) + 1;
+
+    INSERT INTO LudoGamePlay (player_id, dice_roll, position)
+    VALUES (@nextPlayer, @diceRoll, 0);
+END;
+GO
+
+SELECT * FROM LudoGamePlay ORDER BY turn_id;
+
+-- Loop until one player reaches 100
+DECLARE @game_ongoing BIT = 1;
+WHILE @game_ongoing = 1
+BEGIN
+    EXEC SimulateTurn;
+
+    -- Show latest move
+    SELECT * FROM LudoGamePlay ORDER BY turn_id DESC;
+
+    -- Check for a winner
+    IF EXISTS (SELECT 1 FROM LudoGamePlay WHERE player_id = 1 AND position  = 100)
+    BEGIN
+        RAISERROR('Player 1 has won!', 0, 1) WITH NOWAIT; 
+        SET @game_ongoing = 0;
+    END
+
+    IF EXISTS (SELECT 1 FROM LudoGamePlay WHERE player_id = 2 AND position  = 100)
+    BEGIN
+        RAISERROR('Player 2 has won!', 0, 1) WITH NOWAIT;
+        SET @game_ongoing = 0;
+    END
+END;
+GO
